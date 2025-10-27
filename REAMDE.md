@@ -5,8 +5,8 @@ This is the official code base for DD-PPO (at least we hope it to be)
 ## Set up the docker container
 1. Clone this repo
 2. Go to the root directory of this repo
-3. Type ```source ./docker/build.docker.sh``` to build a docker image
-4. Type ```source ./docker/run.docker.sh``` to run the docker container
+3. Type ```source ./docker/build.docker.sh``` to build a docker image(before this, should create a tools.sh)
+4. Type ```source ./docker/run.docker.sh``` to run the docker container(make sure NVIDIA Container Toolkit installed)
 5. Choose your preferred way to work inside the docker container
 	1. The author likes to use the docker extension in VSCode **Thumbs up**
 
@@ -44,6 +44,8 @@ python3 setup.py install
 ```
 pip install open3d/pickle
 ```
+
+I encountered a problem related to ```setuptools```, which seems to be using the system's ```distutils```. Then I downgraded the ```setuptools``` to 59.8.0 to avoid errors.
 
 ## Test the codes!
 1. At first, type the following the codes to verify that Gensis is working correctly

@@ -625,7 +625,7 @@ grasp_pose[:3, 3] = np.array([0.009, 0.051, 0.09])
 #     ])
 # grasp_pose[0:3, 3] = np.array([0, 0, 0.1])
 env = MoveCubeEnv(obj_filename = obj_filename, obj_type = obj_type, grasp_pose=grasp_pose)
-# env.collect_demo()
-env.policy(policy="diffusion", normalization_stats="normalization_stats.pth")
+env.collect_demo()
+# env.policy(policy="diffusion", normalization_stats="normalization_stats.pth")
 
 
