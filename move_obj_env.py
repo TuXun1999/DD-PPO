@@ -12,6 +12,11 @@ from denoising_diffusion_pytorch import ConditionalUnet1D, \
     GaussianDiffusion1DConditional, Trainer1DCond, Dataset1DCond
 
 import open3d as o3d
+
+RED = '\033[91m'
+BLUE = '\033[94m'
+RESET = '\033[0m'
+
 def se2norm(array):
     # Find the norm of a se2 vector; use l2 norm temporarily
     return torch.norm(array[0:2]) + 0.1 * torch.norm(array[2])
@@ -19,12 +24,12 @@ class Joystick:
     def __init__(self, master, env):
         self.master = master
         self.canvas = tk.Canvas(master, width=200, height=200, bg="lightgray")
-        self.canvas.place(x=175, y=50)
+        self.canvas.place(x=450, y=150)
 
         buttons = {}
-        buttons["left"] = [10, 120]
-        buttons["right"] = [400, 120]
-        buttons["top"] = [250, 10]
+        buttons["left"] = [100, 200]
+        buttons["right"] = [700, 200]
+        buttons["top"] = [450, 10]
 
         self.frames = {}
         self.labels = {}
@@ -127,6 +132,7 @@ class Joystick:
                            self.center_x + self.knob_radius, self.center_y + self.knob_radius)
         self.knob_x, self.knob_y = self.center_x, self.center_y
         # print("Joystick released, reset to center.")
+
     def on_key_release(self, event):
         if event.keysym =='a':
             self.env.execute([0, 0, 1])
@@ -260,7 +266,7 @@ class MoveCubeEnv():
 
         ############################ Teleoperation GUI ###################
         self.joystick_root = tk.Tk()
-        self.joystick_root.geometry("600x300") 
+        self.joystick_root.geometry("1000x500") 
         self.joystick = Joystick(self.joystick_root, self)
         
         # Maximum speed for the cube
@@ -333,6 +339,7 @@ class MoveCubeEnv():
         self.in_progress = False
 
         # Start the new data collection thread
+        print(f"TEST: collect_data value: {collect_data}")
         if collect_data is True:
             self.kill_thread.clear()
             self.data_collection_thread = threading.Thread(target = self.collect_poses)
@@ -362,6 +369,7 @@ class MoveCubeEnv():
         displacement_vector[2] = joystick_vector[2] * self.max_angular_v
         if not self.in_progress:
             self._move(np.array(displacement_vector))
+
     def _move(self, vector, body = False, timesteps = 10):
         '''
         The function to move the gripper along the target displacement vector
@@ -396,11 +404,13 @@ class MoveCubeEnv():
             for i in range(timesteps):
                 self.scene.step()
             self.in_progress = False
+
     def _exit(self):
         '''
         The function to exit the current simulation environment
         '''
         self.kill_thread.set()
+        time.sleep(2)
         # Store the collected data into a separate file
         data_dict = {}
         data_dict["gripper_poses"] = self.gripper_poses
@@ -412,13 +422,11 @@ class MoveCubeEnv():
         exit(0)
     
     def collect_poses(self):
-
         gripper_poses_one_demo = []
         object_poses_one_demo = []
         while True and not self.kill_thread.is_set():
             # Obtain the gripper pose
             current_pos = self.franka_gripper.get_pos().cpu().numpy()
-
             # Euler convention: body-3-2-1 / world-1-2-3
             current_angle = quat_to_xyz(self.franka_gripper.get_quat(), rpy=True).cpu().numpy()
             gripper_pose = [\
@@ -446,6 +454,7 @@ class MoveCubeEnv():
 
         self.gripper_poses.append(gripper_poses_one_demo)
         self.object_poses.append(object_poses_one_demo)
+
     def collect_demo(self):
         
 

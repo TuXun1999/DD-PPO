@@ -45,7 +45,7 @@ python3 setup.py install
 pip install open3d/pickle
 ```
 
-I encountered a problem related to ```setuptools```, which seems to be using the system's ```distutils```. Then I downgraded the ```setuptools``` to 59.8.0 to avoid errors.
+(I encountered a problem related to ```setuptools```, which seems to be using the system's ```distutils```. Then I downgraded the ```setuptools``` to 59.8.0 to avoid errors.)
 
 ## Test the codes!
 1. At first, type the following the codes to verify that Gensis is working correctly
@@ -53,9 +53,12 @@ I encountered a problem related to ```setuptools```, which seems to be using the
 python3 move_obj_env.py
 ```
 You should be able to move the banana using WASD-style virtual joystick. 
+(Enter 'a', 'd', 'r', 'q' to achieve button effect. And pressing buttons don't work)
 
 2. After you kill program, a small package file called "banana.pkl" will be generated in the local directory. This is the raw dataset for the diffusion policy. 
 	1. You don't need to do anything about it. I have already created one for your test in denoising-diffusion-pytorch
+
+
 3. You can also load a diffusion policy & verify its performance by loading it into the pipeline! This part of codes are commented out. Feel free to do it after you complete the testing of diffusion policy
 
 4. Go inside denoising_diffusion_pytorch, and modify line 70 of test_ddpm_move_cube.py into the correct path of banana.pkl, i.e

@@ -46,7 +46,8 @@ if option == "unet1d":
     model = ConditionalUnet1D(
         input_dim = action_dim,
         local_cond_dim = 1,
-        global_cond_dim = obs_length * obs_dim,
+        # global_cond_dim = obs_length * obs_dim,
+        global_cond_dim = 2 * obs_length * obs_dim,  # include object pose & gripper(current?) pose
     )
 else:
    model = TransformerForDiffusion(
@@ -112,8 +113,8 @@ for i in range(len(gripper_poses)):
         NOTE: Look at both gripper pose & object pose => strange RL behaviors
         Current approach: only look at object pose
         '''
-        # obs = np.concatenate([obs_gripper, obs_obj], axis=-1)
-        obs = obs_obj
+        obs = np.concatenate([obs_gripper, obs_obj], axis=-1)
+        # obs = obs_obj
         global_label.append(obs)
 
         # Extra attributes for RL: reward & next state & done
@@ -124,8 +125,8 @@ for i in range(len(gripper_poses)):
         NOTE: look at both object pose & gripper pose => strange RL behaviors
         Current approach: only look at object poses
         '''
-        next_obs = next_obs_obj
-        # next_obs = np.concatenate([next_obs_gripper, next_obs_obj], axis=-1)
+        # next_obs = next_obs_obj
+        next_obs = np.concatenate([next_obs_gripper, next_obs_obj], axis=-1)
         
         next_states.append(next_obs)
 
@@ -167,9 +168,9 @@ vis_select_idx = np.random.randint(0, len(gripper_poses)) # The index of the dem
 NOTE: now, look at both object poses and gripper poses => RL behaves strangely
 Current approach: only looks at object poses
 '''
-vis_demo_start = object_poses[vis_select_idx][0]
-# vis_demo_start = np.concatenate(
-#     [gripper_poses[vis_select_idx][0], object_poses[vis_select_idx][0]])
+# vis_demo_start = object_poses[vis_select_idx][0]
+vis_demo_start = np.concatenate(
+    [gripper_poses[vis_select_idx][0], object_poses[vis_select_idx][0]])
 vis_demo_start = np.tile(vis_demo_start, (obs_length, ))
 
 select_idx = select_closest_sample(global_label, vis_demo_start)# The index of the starting location in global_label
@@ -265,10 +266,10 @@ local_label_sample = torch.tile(local_label[select_idx], (batch_size_sample, 1))
 '''
 NOTE: now, only consider the object pose
 '''
-obs_pose = global_label[select_idx][-obs_dim:]
-# obs_pose = torch.concatenate(
-#     [global_label[select_idx][(obs_length - 1) * action_dim : obs_length * action_dim],
-#      global_label[select_idx][-obs_dim:]])
+# obs_pose = global_label[select_idx][-obs_dim:]
+obs_pose = torch.concatenate(
+    [global_label[select_idx][(obs_length - 1) * action_dim : obs_length * action_dim],
+     global_label[select_idx][-obs_dim:]])
 steps = 0
 print("**** Visualization Check ****")
 print(obs_pose)
@@ -315,39 +316,39 @@ while True:
     '''
     NOTE: The following code block looks at both gripper pose & object pose
     '''
-    # last_gripper_pose = obs_pose[0:action_dim]
-    # last_object_pose = obs_pose[action_dim:]
-    # action = torch.mean(traj_recon, dim=1) # TODO: correct the dimenstion
-    # last_gripper_pose += action
-    # # The action is applied on the gripper, but the object needs to updated differently
-    # last_object_pose[0:2] += action[0:2] # Update the position
-    # last_object_pose[2] += action[2] # Update the angle
-    # obs_gripper_pose = global_label_sample[0][action_dim : obs_length * action_dim]
-    # obs_gripper_pose = torch.concatenate((obs_gripper_pose, last_gripper_pose))
-    # obs_object_pose = global_label_sample[0][obs_length * action_dim + obs_dim :]
-    # obs_object_pose = torch.concatenate((obs_object_pose, last_object_pose))
-    # global_label_sample = torch.concatenate([obs_gripper_pose, obs_object_pose])
-    # obs_pose = torch.concatenate([last_gripper_pose, last_object_pose])
-    # assert obs_pose.shape[0] == 2 * obs_dim
-    # assert global_label_sample.shape[0] == 2 * obs_dim * obs_length
+    last_gripper_pose = obs_pose[0:action_dim]
+    last_object_pose = obs_pose[action_dim:]
+    action = torch.mean(traj_recon, dim=1) # TODO: correct the dimenstion
+    last_gripper_pose += action
+    # The action is applied on the gripper, but the object needs to updated differently
+    last_object_pose[0:2] += action[0:2] # Update the position
+    last_object_pose[2] += action[2] # Update the angle
+    obs_gripper_pose = global_label_sample[0][action_dim : obs_length * action_dim]
+    obs_gripper_pose = torch.concatenate((obs_gripper_pose, last_gripper_pose))
+    obs_object_pose = global_label_sample[0][obs_length * action_dim + obs_dim :]
+    obs_object_pose = torch.concatenate((obs_object_pose, last_object_pose))
+    global_label_sample = torch.concatenate([obs_gripper_pose, obs_object_pose])
+    obs_pose = torch.concatenate([last_gripper_pose, last_object_pose])
+    assert obs_pose.shape[0] == 2 * obs_dim
+    assert global_label_sample.shape[0] == 2 * obs_dim * obs_length
     
     
     '''
     NOTE: The following block only looks at the object pose
     '''
-    last_object_pose = obs_pose.clone()
-    action = torch.mean(traj_recon, dim=1) # TODO: correct the dimenstion
+    # last_object_pose = obs_pose.clone()
+    # action = torch.mean(traj_recon, dim=1) # TODO: correct the dimenstion
     
-    # The action is applied on the gripper, but the object needs to updated differently
-    # last_object_pose += action
-    last_object_pose[0:2] += action[0:2] # Update the position
-    last_object_pose[2] -= action[2] # Update the angle
+    # # The action is applied on the gripper, but the object needs to updated differently
+    # # last_object_pose += action
+    # last_object_pose[0:2] += action[0:2] # Update the position
+    # last_object_pose[2] -= action[2] # Update the angle
     
-    obs_object_pose = global_label_sample[0][obs_dim :]
-    obs_object_pose = torch.concatenate((obs_object_pose, last_object_pose))
-    global_label_sample = obs_object_pose
+    # obs_object_pose = global_label_sample[0][obs_dim :]
+    # obs_object_pose = torch.concatenate((obs_object_pose, last_object_pose))
+    # global_label_sample = obs_object_pose
     
-    obs_pose = last_object_pose.clone()
+    # obs_pose = last_object_pose.clone()
     
     
 
