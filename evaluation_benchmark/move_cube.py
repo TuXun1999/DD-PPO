@@ -308,13 +308,13 @@ if __name__ == "__main__":
 		"action_dim": 3,
 		"state_dim": 3
 	}
-	training_stats_g1 = "../trained_models/" + args.env + "/grasp_pose1/training_stats.pth"
-	training_stats_g2 = "../trained_models/" + args.env + "/grasp_pose2/training_stats.pth"
-	rewarding_model_g1 = "../trained_models/" + args.env + "/grasp_pose1/results/rewarding_model.pth"
-	rewarding_model_g2 = "../trained_models/" + args.env + "/grasp_pose2/results/rewarding_model.pth"
+	training_stats_g1 = args.dataset + "/" + args.env + "/grasp_pose1/training_stats.pth"
+	training_stats_g2 = args.dataset + "/" + args.env + "/grasp_pose2/training_stats.pth"
+	rewarding_model_g1 = args.dataset + "/" + args.env + "/grasp_pose1/results/rewarding_model.pth"
+	rewarding_model_g2 = args.dataset + "/" + args.env + "/grasp_pose2/results/rewarding_model.pth"
 	# The pretrained weights
-	result_g1 = "../trained_models/" + args.env + "/grasp_pose1/results"
-	result_g2 = "../trained_models/" + args.env + "/grasp_pose2/results"
+	result_g1 = args.dataset + "/" + args.env + "/grasp_pose1/results"
+	result_g2 = args.dataset + "/" + args.env + "/grasp_pose2/results"
  
 	kwargs["training_stats"] = training_stats_g1
 	kwargs["rewarding_model_path"] = rewarding_model_g1
