@@ -502,7 +502,9 @@ class MoveCubeEnv():
         diffusion = GaussianDiffusion1DConditional(
             model,
             seq_length = seq_length,
-            timesteps = 1000,
+            timesteps = 10,
+            sampling_timesteps = 8,
+            ddim_sampling_eta = 1.0,
             objective = 'pred_noise'
         )
 
@@ -625,7 +627,6 @@ grasp_pose[:3, 3] = np.array([0.009, 0.051, 0.09])
 #     ])
 # grasp_pose[0:3, 3] = np.array([0, 0, 0.1])
 env = MoveCubeEnv(obj_filename = obj_filename, obj_type = obj_type, grasp_pose=grasp_pose)
-# env.collect_demo()
-env.policy(policy="diffusion", normalization_stats="normalization_stats.pth")
+env.collect_demo()
 
 
