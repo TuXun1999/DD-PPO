@@ -17,7 +17,7 @@ from scipy.spatial.transform import Rotation as R
 """
 Runs policy for X episodes and returns reward
 """
-import wandb
+# import wandb
 import random
 from genesis.utils.geom import xyz_to_quat
 project="object-moving-se2"
@@ -49,24 +49,6 @@ def replay_buffer_fill(replay_buffer, training_stats_filename):
 		replay_buffer.add(state, action[:, 0], \
 					next_state, reward, done_bool)
 
-
-
-
-# The function to train the policy
-def train_policy(policy, replay_buffer, args, algorithm = "TD3"):
-	if algorithm == "TD3":
-		print("*** Pretraining the RL agent using TD3 ***")
-		# Pretrain the RL agent
-		with wandb.init(project=project, config=config) as run:
-			for i in tqdm(range(10000)):
-				# Pretrain the Q-value function
-				policy.train(replay_buffer, args.batch_size, run)
-	elif algorithm == "IBRL":
-		# Pretrain the RL agent with Imitation Learning
-		print("*** Pretraining the RL agent further with IL policy ***")
-		for i in tqdm(range(50)):
-			# Pretrain the IBRL policy
-			policy.train_ibrl(replay_buffer, args.batch_size)
 
 # Function to adapt the action in one grasp pose to the other grasp pose
 # Policy evaluation function
@@ -315,7 +297,7 @@ if __name__ == "__main__":
 	# The pretrained weights
 	result_g1 = args.dataset + "/" + args.env + "/grasp_pose1/results"
 	result_g2 = args.dataset + "/" + args.env + "/grasp_pose2/results"
- 
+
 	kwargs["training_stats"] = training_stats_g1
 	kwargs["rewarding_model_path"] = rewarding_model_g1
 	kwargs["results_folder"] = result_g1
@@ -324,7 +306,7 @@ if __name__ == "__main__":
 	kwargs["training_stats"] = training_stats_g2
 	kwargs["rewarding_model_path"] = rewarding_model_g2
 	kwargs["results_folder"] = result_g2
-	# policy_g2 = policy.DiffusionPolicyCustom(**kwargs)
+	policy_g2 = policy.DiffusionPolicyCustom(**kwargs)
 
 	
 	"""
@@ -354,7 +336,8 @@ if __name__ == "__main__":
 		command_cfg=command_cfg,
 		show_viewer=args.vis,
 	)
-	eval_policy(policy_g1, ["baseline-random", "baseline-rewarding"], env_g2, args, grasp_pose = "g2")
+	eval_policy(policy_g1, ["baseline-random", "baseline-rewarding"], env_g2, args, grasp_pose = "g1-to-g2")
+	eval_policy(policy_g2, ["baseline-rewarding"], env_g2, args, grasp_pose = "g2")
 	# eval_policy(policy_g2, "diffusion", max_action, env_g2, args, grasp_pose = "g2", replay_buffer = None)
 	# train_policy(policy_g2, replay_buffer_g2, args, algorithm="TD3")
 	# train_policy(policy_g2, replay_buffer_g2, args, algorithm="IBRL") # Finetune using IBRL policy on g2
