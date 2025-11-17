@@ -26,7 +26,7 @@ pip install git+https://github.com/Genesis-Embodied-AI/Genesis.git
 	3. Also, my implementation is not synchronized with the latest version of [pytorch-implementation of diffusion model](https://github.com/lucidrains/denoising-diffusion-pytorch). It should be totally fine, since it's working correctly on my machine so far. If you think there is a strong emergency to synchronize the code base to the latest version, let me know and we could solve out the conflicts together
 2. To install diffusion policy, please type the following codes in the terminal:
 ```
-git clone https://github.com/TuXun1999/denoising-diffusion-pytorch.git
+git submodule add https://github.com/TuXun1999/denoising-diffusion-pytorch.git denoising-diffusion-pytorch/
 ```
 
 3. Then, go inside the directory, and install the python package locally from scratch:
