@@ -3,8 +3,6 @@ evaluation_benchmark/results/*
 collected_demos/*/*/*.pth
 collected_demos/*/*/results/*
 
-# Avoid add the repo by mistake
-denoising-diffusion-pytorch/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
