@@ -26,7 +26,7 @@ pip install git+https://github.com/Genesis-Embodied-AI/Genesis.git
 	3. Also, my implementation is not synchronized with the latest version of [pytorch-implementation of diffusion model](https://github.com/lucidrains/denoising-diffusion-pytorch). It should be totally fine, since it's working correctly on my machine so far. If you think there is a strong emergency to synchronize the code base to the latest version, let me know and we could solve out the conflicts together
 2. To install diffusion policy, please type the following codes in the terminal:
 ```
-git clone https://github.com/TuXun1999/denoising-diffusion-pytorch.git
+git submodule add https://github.com/TuXun1999/denoising-diffusion-pytorch.git denoising-diffusion-pytorch/
 ```
 
 3. Then, go inside the directory, and install the python package locally from scratch:
@@ -61,14 +61,9 @@ You should be able to move the banana using WASD-style virtual joystick.
 
 3. You can also load a diffusion policy & verify its performance by loading it into the pipeline! This part of codes are commented out. Feel free to do it after you complete the testing of diffusion policy
 
-4. Go inside denoising_diffusion_pytorch, and modify line 70 of test_ddpm_move_cube.py into the correct path of banana.pkl, i.e
+4. Go inside denoising_diffusion_pytorch. Now, train_diffusion_policy.py should be the main file to test. Please type
 ```
-filename = f"../collected_demos/{obj_type}.pkl"
-```
-
-Then, type
-```
-python3 test_ddpm_move_cube.py
+python3 train_diffusion_policy.py -o banana -t train_ddpm -g 1 -v -d ../collected_demos
 ```
 
 5. You would firstly see a window popped out, containing several frames. These are the SE(2) poses of the object in the collected demos
@@ -77,12 +72,19 @@ python3 test_ddpm_move_cube.py
 
 7. After it's complete, you would see another window popped up, containing several frames. These are the SE(2) poses of the object predicted by the trained diffusion policy. Theoretically, they are similar (at least, you should expect the object to move back to the origin!)
 
-8. The whole process may take 5-15 mins
+8. The whole process may take 5-15 mins.
 
-9. After the diffusion model is trained, to evaluate the diffusion policy in our previous simulation platform, copy the following file/folder back to the root directory:
-	1. ./results
-	2. normalization_stats.pth
+9. After the diffusion model is trained, to evaluate the diffusion policy, you can type
+```
+python3 train_diffusion_policy.py -o banana -t load_ddpm -g 1 -v -d ../collected_demos
+```
 
-10. Go back to the root directory, comment the parts to collect demos & uncomment the parts to test diffusion policy, then you would expect to see the gripper moving the banana back to the origin
-
-11. Feel free to read the codes & Explore on yourself. You should be able to push your commits directly to the repo. Once things are validated, I will clone the repo into my own machine & Test it. If it passed, we could move forward to our next step. 
+10. Now, we are evaluating the trained policy in a more quantitative way. Go to the directory 
+```
+cd evaluation_benchmark
+```
+And then, type 
+```
+python3 move_cube.py --env banana --dataset ../collected_demos --rollout_num 20 -v -r
+```
+You will see the running of the policy at a new test pose. Also, you can see the rendered videos under the "results" directory. 

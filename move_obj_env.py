@@ -234,6 +234,25 @@ class MoveCubeEnv():
             # Ignore gravity for the robot
             material=gs.materials.Rigid(gravity_compensation=0.9),
         )
+
+        # Entity 5: Adding two camera
+        # forward angle
+        self.cam1 = self.scene.add_camera(
+            res    = (640, 480),
+            pos    = (3.5, 0.0, 2.5),
+            lookat = (0, 0, 0.5),
+            fov    = 30,
+            GUI    = True,
+        )
+
+        # overhead angle
+        self.cam2 = self.scene.add_camera(
+            res    = (640, 480),
+            pos    = (0.0, 0.0, 1.5),
+            lookat = (0, 0, 0),
+            fov    = 30,
+            GUI    = True,
+        )
         ########################## build ##########################
         self.scene.build()
 
@@ -410,12 +429,13 @@ class MoveCubeEnv():
         The function to exit the current simulation environment
         '''
         self.kill_thread.set()
-        time.sleep(2)
+        time.sleep(3)
         # Store the collected data into a separate file
         data_dict = {}
         data_dict["gripper_poses"] = self.gripper_poses
         data_dict["object_poses"] = self.object_poses
         data_dict["grasp_pose"] = self.grasp_pose
+        data_dict["img_data"] = self.img_data
         with open(self.data_filename, "wb") as f:
             pickle.dump(data_dict, f)
 
@@ -424,7 +444,16 @@ class MoveCubeEnv():
     def collect_poses(self):
         gripper_poses_one_demo = []
         object_poses_one_demo = []
+        image_one_demo = {"forward_view": [], "overhead_view": []}
+
+        # self.cam2.start_recording()
         while True and not self.kill_thread.is_set():
+            # Obtain the current image, renders input np.array(480, 640, 3)
+            rgb_1, depth_1, _, _ = self.cam1.render(rgb=False, depth=False, segmentation=False, normal=False)
+            rgb_2, depth_2, _, _ = self.cam2.render(rgb=True, depth=False, segmentation=False, normal=False)
+            image_one_demo["forward_view"].append(rgb_1)
+            image_one_demo["overhead_view"].append(rgb_2)
+
             # Obtain the gripper pose
             current_pos = self.franka_gripper.get_pos().cpu().numpy()
             # Euler convention: body-3-2-1 / world-1-2-3
@@ -448,12 +477,21 @@ class MoveCubeEnv():
             # Wait for some time so we can drive the robot to a new position.
             time.sleep(0.2)
 
+        # self.cam2.stop_recording(save_to_filename='video1112.mp4', fps=60)
         # Extend the existing list or Create a new list
         gripper_poses_one_demo = np.array(gripper_poses_one_demo)
         object_poses_one_demo = np.array(object_poses_one_demo)
+        print(f"gripper poses shape: {gripper_poses_one_demo.shape}")
+        print(f"object_poses_one_demo: {object_poses_one_demo.shape}")
+        
+        image_one_demo["forward_view"] = np.array(image_one_demo["forward_view"])
+        image_one_demo["overhead_view"] = np.array(image_one_demo["overhead_view"])
+        print(f"forward view data shape: {image_one_demo['forward_view'].shape}")
+        print(f"overhead view data shape: {image_one_demo['overhead_view'].shape}")
 
         self.gripper_poses.append(gripper_poses_one_demo)
         self.object_poses.append(object_poses_one_demo)
+        self.img_data = image_one_demo
 
     def collect_demo(self):
         
@@ -511,7 +549,9 @@ class MoveCubeEnv():
         diffusion = GaussianDiffusion1DConditional(
             model,
             seq_length = seq_length,
-            timesteps = 1000,
+            timesteps = 10,
+            sampling_timesteps = 8,
+            ddim_sampling_eta = 1.0,
             objective = 'pred_noise'
         )
 
@@ -613,28 +653,27 @@ class MoveCubeEnv():
 
 
 # The mesh model of the object
-obj_type = "banana"
-obj_filename = "./object_models/banana/textured.obj"
+obj_type = "T-shape"
+obj_filename = "./object_models/T-shape/textured.obj"
 
 # Obtain the grasp pose in the frame of the object
 grasp_pose = np.eye(4)
 # grasp_pose[:3, :3] = R.from_euler('zyx', [0, -90, 90], degrees=True).as_matrix()
 
 # grasp_pose[:3, 3] = np.array([0.17, 0, 0.09])
-grasp_pose[:3, :3] = R.from_euler('zyx', [120, 0, 180], degrees=True).as_matrix()
+# grasp_pose[:3, :3] = R.from_euler('zyx', [120, 0, 180], degrees=True).as_matrix()
 
-grasp_pose[:3, 3] = np.array([0.009, 0.051, 0.09])
+# grasp_pose[:3, 3] = np.array([0.009, 0.051, 0.09])
 
 # Another pose
-# grasp_pose = np.array([
-#         [  0.0000000,  1.0000000,  0.0000000, 0],
-#     [1.0000000, -0.0000000,  0.0000000, 0],
-#     [0.0000000, -0.0000000, -1.0000000, 0 ],
-#     [0, 0, 0, 1]
-#     ])
-# grasp_pose[0:3, 3] = np.array([0, 0, 0.1])
+grasp_pose = np.array([
+        [  0.0000000,  1.0000000,  0.0000000, 0],
+    [1.0000000, -0.0000000,  0.0000000, 0],
+    [0.0000000, -0.0000000, -1.0000000, 0 ],
+    [0, 0, 0, 1]
+    ])
+grasp_pose[0:3, 3] = np.array([0, 0, 0.1])
 env = MoveCubeEnv(obj_filename = obj_filename, obj_type = obj_type, grasp_pose=grasp_pose)
 env.collect_demo()
-# env.policy(policy="diffusion", normalization_stats="normalization_stats.pth")
 
 
