@@ -1,0 +1,70 @@
+# Default configuration for Diffusion Policy
+
+model:
+  backbone: "unet1d"  # "unet1d" or "transformer"
+  input_dim: 3
+  local_cond_dim: 1
+  global_cond_dim: 12  # 2 * obs_length * obs_dim
+
+  # UNet1D specific
+  down_dims: [256, 512, 1024]
+  diffusion_step_embed_dim: 256
+  kernel_size: 3
+  n_groups: 8
+  cond_predict_scale: false
+
+  # Transformer specific
+  n_layer: 12
+  n_head: 12
+  n_emb: 768
+  p_drop_emb: 0.1
+  p_drop_attn: 0.1
+  causal_attn: false
+  time_as_cond: true
+  n_cond_layers: 0
+
+diffusion:
+  seq_length: 16
+  timesteps: 10
+  sampling_timesteps: 8
+  ddim_sampling_eta: 1.0
+  objective: "pred_noise"
+  beta_schedule: "cosine"
+  auto_normalize: true
+
+training:
+  batch_size: 32
+  lr: 1.0e-4
+  num_steps: 5000
+  gradient_accumulate: 2
+  max_grad_norm: 1.0
+
+  ema_decay: 0.995
+  ema_update_every: 10
+
+  use_amp: true
+  mixed_precision_type: "fp16"
+
+  adam_betas: [0.9, 0.99]
+  weight_decay: 1.0e-3
+
+  save_every: 1000
+  results_folder: "./results"
+
+  use_wandb: false
+  wandb_project: "diffusion-policy"
+  wandb_run_name: null
+
+data:
+  dataset_dir: "../collected_demos"
+  object_type: "banana"
+  grasp_pose: 1
+
+  obs_length: 2
+  obs_dim: 3
+  pred_length: 16
+  action_dim: 3
+  action_length: 8
+
+  num_workers: 4
+  pin_memory: true
