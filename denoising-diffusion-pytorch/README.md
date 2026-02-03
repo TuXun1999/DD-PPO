@@ -32,6 +32,7 @@ pip install -e ".[visualization,logging,dev]"
 ### Using the Training Script
 
 ```bash
+cd denoising-diffusion-pytorch
 # Train with default settings
 python scripts/train.py --object banana --grasp-pose 1
 

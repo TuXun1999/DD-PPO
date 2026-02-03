@@ -59,7 +59,7 @@ class DiffusionConfig:
 @dataclass
 class TrainingConfig:
     """Configuration for training."""
-    batch_size: int = 32
+    batch_size: int = 8
     lr: float = 1e-4
     num_steps: int = 5000
     gradient_accumulate: int = 2

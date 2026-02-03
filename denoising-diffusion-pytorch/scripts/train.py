@@ -14,6 +14,14 @@ import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint, LearningRateMonitor
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 
+import torch
+torch.set_float32_matmul_precision('medium')
+
+import warnings
+import logging
+warnings.filterwarnings("ignore")
+logging.getLogger("lightning.pytorch").setLevel(logging.ERROR)
+
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -155,10 +163,25 @@ def main():
         accumulate_grad_batches=args.gradient_accumulate,
         callbacks=callbacks,
         logger=logger,
-        log_every_n_steps=10,
-        val_check_interval=500,
+        log_every_n_steps=1,
+        check_val_every_n_epoch=1,
+        val_check_interval=None,
         enable_progress_bar=True,
     )
+    
+    # for larger datasets, use val_check_interval instead of check_val_every_n_epoch
+    # trainer = L.Trainer(
+    #     accelerator=args.accelerator,
+    #     precision=args.precision,
+    #     max_steps=args.max_steps,
+    #     accumulate_grad_batches=args.gradient_accumulate,
+    #     callbacks=callbacks,
+    #     logger=logger,
+    #     log_every_n_steps=10,
+    #     val_check_interval=500,
+    #     enable_progress_bar=True,
+    # )
+
 
     # Train
     print(f"Training Diffusion Policy for {args.object} (grasp_pose={args.grasp_pose})")

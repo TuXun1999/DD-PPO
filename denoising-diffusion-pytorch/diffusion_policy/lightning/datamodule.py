@@ -14,6 +14,7 @@ from ..data.preprocessing import (
     NormalizationStats,
     load_demo_data,
     process_demos,
+    process_demos_with_images,
     save_training_stats,
     load_training_stats,
 )
@@ -62,13 +63,24 @@ class DiffusionPolicyDataModule(pl.LightningDataModule):
                 self.config.grasp_pose,
             )
 
-            actions, local_cond, global_cond, stats = process_demos(
-                demo_data,
-                obs_length=self.config.obs_length,
-                obs_dim=self.config.obs_dim,
-                pred_length=self.config.pred_length,
-                action_dim=self.config.action_dim,
-            )
+            if self.config.use_images:
+                actions, local_cond, global_cond, images, stats = process_demos_with_images(
+                    demo_data,
+                    obs_length=self.config.obs_length,
+                    obs_dim=self.config.obs_dim,
+                    pred_length=self.config.pred_length,
+                    action_dim=self.config.action_dim,
+                    num_image_history=self.config.num_image_history,
+                )
+            else:
+                actions, local_cond, global_cond, stats = process_demos(
+                    demo_data,
+                    obs_length=self.config.obs_length,
+                    obs_dim=self.config.obs_dim,
+                    pred_length=self.config.pred_length,
+                    action_dim=self.config.action_dim,
+                )
+                images = None
 
             save_training_stats(
                 str(self.stats_path),
@@ -76,6 +88,7 @@ class DiffusionPolicyDataModule(pl.LightningDataModule):
                 local_cond,
                 global_cond,
                 stats,
+                images=images,
             )
 
     def setup(self, stage: Optional[str] = None) -> None:
@@ -86,11 +99,17 @@ class DiffusionPolicyDataModule(pl.LightningDataModule):
             stage: Either 'fit', 'validate', 'test', or 'predict'
         """
         # Load processed data
-        actions, local_cond, global_cond, stats = load_training_stats(str(self.stats_path))
+        actions, local_cond, global_cond, images, stats = load_training_stats(str(self.stats_path))
         self.normalization_stats = stats
 
         # Create full dataset
-        full_dataset = DiffusionPolicyDataset(actions, local_cond, global_cond)
+        full_dataset = DiffusionPolicyDataset(
+            actions,
+            local_cond,
+            global_cond,
+            images=images,
+            use_images=self.config.use_images,
+        )
 
         # Split into train/val
         total_size = len(full_dataset)

@@ -1,632 +1,558 @@
+"""
+Data collection environment for object manipulation demos.
+
+This module provides a simulation environment with a floating gripper
+for collecting teleoperated demonstrations of object manipulation tasks.
+"""
+import argparse
+import json
+import pickle
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+
 import numpy as np
+import open3d as o3d
 import genesis as gs
 from genesis.utils.geom import quat_to_xyz, xyz_to_quat
 from scipy.spatial.transform import Rotation as R
 import tkinter as tk
-import threading
-import time
-import pickle
-import torch
 
-from denoising_diffusion_pytorch import ConditionalUnet1D, \
-    GaussianDiffusion1DConditional, Trainer1DCond, Dataset1DCond
 
-import open3d as o3d
-def se2norm(array):
-    # Find the norm of a se2 vector; use l2 norm temporarily
-    return torch.norm(array[0:2]) + 0.1 * torch.norm(array[2])
+@dataclass
+class EnvConfig:
+    """Configuration for the data collection environment."""
+    obj_filename: str
+    obj_type: str
+    grasp_pose: np.ndarray
+    horizon_size: float = 0.3
+    max_v: float = 0.04
+    max_angular_v: float = 10 * np.pi / 180
+    pose_noise_std: Dict[str, float] = field(
+        default_factory=lambda: {"x": 0.001, "y": 0.001, "theta": 0.001}
+    )
+
+
 class Joystick:
-    def __init__(self, master, env):
+    """Tkinter-based joystick GUI for teleoperation control."""
+
+    def __init__(self, master: tk.Tk, env: "MoveCubeEnv"):
         self.master = master
-        self.canvas = tk.Canvas(master, width=200, height=200, bg="lightgray")
-        self.canvas.place(x=175, y=50)
+        self.env = env
+        self._setup_canvas()
+        self._setup_buttons()
+        self._setup_bindings()
 
-        buttons = {}
-        buttons["left"] = [10, 120]
-        buttons["right"] = [400, 120]
-        buttons["top"] = [250, 10]
-
-        self.frames = {}
-        self.labels = {}
-        for key, button in buttons.items():
-            frame = tk.Frame(
-                master=master,
-                relief=tk.RAISED,
-                borderwidth=1
-            )
-            x, y = button
-            self.frames[key] = frame
-            frame.place(x=x, y=y)
-            frame.configure(bg="Grey")
-            
-            if key == "left":
-                txt = "Rotate left\n(clockwise)"
-            elif key == "right":
-                txt = "Rotate right\n(counter-clockwise)"
-            elif key == "top":
-                txt = "Reset"
-            label = tk.Label(master=frame, text=txt, font=("Arial", 16, "bold"))
-            label.pack(padx=2, pady=2)
-            label.configure(bg="Grey")
-            self.labels[key] = label
-
+    def _setup_canvas(self):
+        """Initialize the joystick canvas."""
+        self.canvas = tk.Canvas(self.master, width=200, height=200, bg="lightgray")
+        self.canvas.place(x=450, y=150)
 
         self.center_x, self.center_y = 100, 100
         self.base_radius = 80
         self.knob_radius = 20
 
-        self.canvas.create_oval(self.center_x - self.base_radius, self.center_y - self.base_radius,
-                                self.center_x + self.base_radius, self.center_y + self.base_radius,
-                                fill="gray", outline="darkgray")
+        self.canvas.create_oval(
+            self.center_x - self.base_radius,
+            self.center_y - self.base_radius,
+            self.center_x + self.base_radius,
+            self.center_y + self.base_radius,
+            fill="gray",
+            outline="darkgray",
+        )
 
-        self.knob = self.canvas.create_oval(self.center_x - self.knob_radius, self.center_y - self.knob_radius,
-                                            self.center_x + self.knob_radius, self.center_y + self.knob_radius,
-                                            fill="blue", outline="darkblue")
+        self.knob = self.canvas.create_oval(
+            self.center_x - self.knob_radius,
+            self.center_y - self.knob_radius,
+            self.center_x + self.knob_radius,
+            self.center_y + self.knob_radius,
+            fill="blue",
+            outline="darkblue",
+        )
 
         self.knob_x, self.knob_y = self.center_x, self.center_y
 
-        # Optional: Set focus when mouse enters the canvas
+    def _setup_buttons(self):
+        """Setup control button labels."""
+        buttons = {
+            "left": (100, 200, "Rotate left\n(clockwise)"),
+            "right": (700, 200, "Rotate right\n(counter-clockwise)"),
+            "top": (450, 10, "Reset"),
+        }
+
+        self.frames = {}
+        self.labels = {}
+
+        for key, (x, y, txt) in buttons.items():
+            frame = tk.Frame(master=self.master, relief=tk.RAISED, borderwidth=1)
+            frame.place(x=x, y=y)
+            frame.configure(bg="Grey")
+            self.frames[key] = frame
+
+            label = tk.Label(master=frame, text=txt, font=("Arial", 16, "bold"))
+            label.pack(padx=2, pady=2)
+            label.configure(bg="Grey")
+            self.labels[key] = label
+
+    def _setup_bindings(self):
+        """Setup event bindings for mouse and keyboard."""
         self.canvas.bind("<Enter>", lambda e: self.canvas.focus_set())
-        self.canvas.tag_bind(self.knob, "<Button-1>", self.on_button_press)
-        self.canvas.tag_bind(self.knob, "<B1-Motion>", self.on_mouse_drag)
-        self.canvas.tag_bind(self.knob, "<ButtonRelease-1>", self.on_button_release)
+        self.canvas.tag_bind(self.knob, "<Button-1>", self._on_button_press)
+        self.canvas.tag_bind(self.knob, "<B1-Motion>", self._on_mouse_drag)
+        self.canvas.tag_bind(self.knob, "<ButtonRelease-1>", self._on_button_release)
+        self.canvas.bind("<KeyRelease>", self._on_key_release)
 
-        self.canvas.bind("<KeyRelease>", self.on_key_release)
+        # Button color change bindings
+        for key, char in [("left", "a"), ("right", "d"), ("top", "r")]:
+            self.master.bind(
+                f"<KeyPress-{char}>",
+                lambda e, k=key: self._button_color_change(k),
+            )
+            self.master.bind(
+                f"<KeyRelease-{char}>",
+                lambda e, k=key: self._button_color_restore(k),
+            )
 
-        # Bind the button with events
-        self.master.bind("<KeyPress-a>", lambda event: self.button_color_change(event, "left"))
-        self.master.bind("<KeyRelease-a>", lambda event: self.button_color_restore(event, "left"))
-        self.master.bind("<KeyPress-d>", lambda event: self.button_color_change(event, "right"))
-        self.master.bind("<KeyRelease-d>", lambda event: self.button_color_restore(event, "right"))
-        self.master.bind("<KeyPress-r>", lambda event: self.button_color_change(event, "top"))
-        self.master.bind("<KeyRelease-r>", lambda event: self.button_color_restore(event, "top"))
-        # The simulation environment linked to this Joystick
-        self.env = env
-    
-    def button_color_change(self, event, option):
-        # Change the color of the button 
+    def _button_color_change(self, option: str):
         self.frames[option].configure(bg="Red")
         self.labels[option].configure(bg="Red")
-    def button_color_restore(self, event, option):
-        # Restore the color of the button 
+
+    def _button_color_restore(self, option: str):
         self.frames[option].configure(bg="Grey")
         self.labels[option].configure(bg="Grey")
-    def on_button_press(self, event):
+
+    def _on_button_press(self, event):
         self.start_x = self.knob_x
         self.start_y = self.knob_y
 
-    def on_mouse_drag(self, event):
-        new_knob_x = event.x
-        new_knob_y = event.y
+    def _on_mouse_drag(self, event):
+        new_knob_x, new_knob_y = event.x, event.y
 
-
-        # Keep knob within base boundaries
-        distance = ((new_knob_x - self.center_x)**2 + (new_knob_y - self.center_y)**2)**0.5
+        # Constrain knob within base
+        distance = ((new_knob_x - self.center_x) ** 2 + (new_knob_y - self.center_y) ** 2) ** 0.5
         if distance > self.base_radius - self.knob_radius:
             ratio = (self.base_radius - self.knob_radius) / distance
             new_knob_x = self.center_x + (new_knob_x - self.center_x) * ratio
             new_knob_y = self.center_y + (new_knob_y - self.center_y) * ratio
 
-        self.canvas.coords(self.knob, new_knob_x - self.knob_radius, new_knob_y - self.knob_radius,
-                           new_knob_x + self.knob_radius, new_knob_y + self.knob_radius)
-        
-        self.knob_x = new_knob_x
-        self.knob_y = new_knob_y
+        self.canvas.coords(
+            self.knob,
+            new_knob_x - self.knob_radius,
+            new_knob_y - self.knob_radius,
+            new_knob_x + self.knob_radius,
+            new_knob_y + self.knob_radius,
+        )
 
-        # Calculate joystick values (e.g., -1 to 1)
+        self.knob_x, self.knob_y = new_knob_x, new_knob_y
+
+        # Calculate normalized joystick values (-1 to 1)
         joystick_x = (self.knob_x - self.center_x) / (self.base_radius - self.knob_radius)
         joystick_y = (self.knob_y - self.center_y) / (self.base_radius - self.knob_radius)
-        # print(f"Joystick X: {joystick_x:.2f}, Joystick Y: {joystick_y:.2f}")
 
-        # Export the value to the external env linked to this joystick
         self.env.execute([joystick_x, joystick_y, 0])
 
-    def on_button_release(self, event):
+    def _on_button_release(self, event):
         # Reset knob to center
-        self.canvas.coords(self.knob, self.center_x - self.knob_radius, self.center_y - self.knob_radius,
-                           self.center_x + self.knob_radius, self.center_y + self.knob_radius)
+        self.canvas.coords(
+            self.knob,
+            self.center_x - self.knob_radius,
+            self.center_y - self.knob_radius,
+            self.center_x + self.knob_radius,
+            self.center_y + self.knob_radius,
+        )
         self.knob_x, self.knob_y = self.center_x, self.center_y
-        # print("Joystick released, reset to center.")
-    def on_key_release(self, event):
-        if event.keysym =='a':
-            self.env.execute([0, 0, 1])
-        elif event.keysym == 'd':
-            self.env.execute([0, 0, -1])
-        elif event.keysym == 'r':
-            self.env.reset()
-        elif event.keysym == 'q':
-            print("Command received. Ready to quit")
-            self.env._exit()
 
-class MoveCubeEnv():
-    def __init__(self, obj_filename, obj_type, grasp_pose, \
-                 horizon_size = 0.3, load_prev = False):
-        ''''
-        The function to initialize the simulation environment containing the block 
-        and the floating gripper
-        '''
-        ########################## init ##########################
+    def _on_key_release(self, event):
+        if event.keysym == "a":
+            self.env.execute([0, 0, 1])
+        elif event.keysym == "d":
+            self.env.execute([0, 0, -1])
+        elif event.keysym == "r":
+            self.env.reset()
+        elif event.keysym == "q":
+            print("Command received. Exiting...")
+            self.env.exit()
+
+
+class MoveCubeEnv:
+    """
+    Simulation environment for object manipulation data collection.
+
+    Provides a floating parallel gripper that can be controlled via
+    teleoperation to collect demonstration trajectories.
+    """
+
+    def __init__(self, config: EnvConfig):
+        """
+        Initialize the simulation environment.
+
+        Args:
+            config: Environment configuration
+        """
+        self.config = config
+        self._init_genesis()
+        self._init_scene()
+        self._init_entities()
+        self._init_gripper_control()
+        self._init_gui()
+        self._init_data_collection()
+
+    def _init_genesis(self):
+        """Initialize Genesis backend."""
         gs.init(backend=gs.gpu)
 
-        ########################## create a scene ##########################
+    def _init_scene(self):
+        """Create and configure the simulation scene."""
         self.scene = gs.Scene(
-            viewer_options = gs.options.ViewerOptions(
-                camera_pos    = (0, 0, 1.5),
-                camera_lookat = (0.0, 0.0, 0.0),
-                camera_fov    = 45,
-                max_FPS       = 60,
+            viewer_options=gs.options.ViewerOptions(
+                camera_pos=(0, 0, 1.5),
+                camera_lookat=(0.0, 0.0, 0.0),
+                camera_fov=45,
+                max_FPS=60,
             ),
-            sim_options = gs.options.SimOptions(
-                dt = 0.01,
-            ),
-            show_viewer = True,
+            sim_options=gs.options.SimOptions(dt=0.01),
+            show_viewer=True,
             show_FPS=False,
         )
-        # TODO: cast a light to remove the shadow?
-        # self.scene.add_light(gs.morphs.Sphere(pos=(0, 0, 1), radius = 0.2,), color=(0, 0, 0),intensity=200000)
-        ########################## entities ##########################
-        # Entity 1: the ground plane
-        plane = self.scene.add_entity(
-            gs.morphs.Plane(),
-        )
+
+    def _init_entities(self):
+        """Add all entities to the scene."""
+        # Ground plane
+        plane = self.scene.add_entity(gs.morphs.Plane())
         plane.set_friction(0.01)
-        # cube = scene.add_entity(
-        #     gs.morphs.Box(
-        #         size = (0.04, 0.04, 0.04),
-        #         pos  = (0.65, 0.0, 0.02),
-        #     )
-        # )
 
-        # Entity 2: the cube
-        self.horizon_size = horizon_size
+        # Load object mesh to get height
+        mesh = o3d.io.read_triangle_mesh(self.config.obj_filename)
+        self.height = -np.min(np.asarray(mesh.vertices)[:, 2])
 
-        # Read the height of the lowest point
-        mesh = o3d.io.read_triangle_mesh(obj_filename)
-        height = -np.min(np.asarray(mesh.vertices)[:, 2])
-        self.height = height
-
+        # Target object
         self.cube = self.scene.add_entity(
             gs.morphs.Mesh(
-                file = obj_filename,
-                pos = [0, 0, height],
-                quat = [1, 0, 0, 0],
+                file=self.config.obj_filename,
+                pos=[0, 0, self.height],
+                quat=[1, 0, 0, 0],
                 convexify=False,
                 decompose_nonconvex=True,
             ),
             surface=gs.surfaces.Rough(
-                        diffuse_texture=gs.textures.ColorTexture(
-                            color=(1.0, 1.0, 1.0),
-                        ),
-                    ),
-            # Reduce the weight
+                diffuse_texture=gs.textures.ColorTexture(color=(1.0, 1.0, 1.0))
+            ),
             material=gs.materials.Rigid(gravity_compensation=1.0),
         )
 
-
-        # Entity 3: the target pose of the object
+        # Virtual target pose indicator
         self.cube_virtual = self.scene.add_entity(
             gs.morphs.Mesh(
-                file = obj_filename,
-                pos = [0, 0, height],
-                quat = [1, 0, 0, 0],
-                fixed = True,
-                collision = False
+                file=self.config.obj_filename,
+                pos=[0, 0, self.height],
+                quat=[1, 0, 0, 0],
+                fixed=True,
+                collision=False,
             ),
             surface=gs.surfaces.Rough(
-                        diffuse_texture=gs.textures.ColorTexture(
-                            color=(1.0, 0.5, 0.5),
-                        ),
-                    )
+                diffuse_texture=gs.textures.ColorTexture(color=(1.0, 0.5, 0.5))
+            ),
         )
 
-
-        # Entity 4: The floating parallel gripper
+        # Floating parallel gripper
         self.franka_gripper = self.scene.add_entity(
-            gs.morphs.URDF(
-                file = "./panda_v2_gripper.urdf",
-            ),
-            # Ignore gravity for the robot
+            gs.morphs.URDF(file="./panda_v2_gripper.urdf"),
             material=gs.materials.Rigid(gravity_compensation=0.9),
         )
-        ########################## build ##########################
+
+        # Cameras
+        self.cam1 = self.scene.add_camera(
+            res=(640, 480),
+            pos=(3.5, 0.0, 2.5),
+            lookat=(0, 0, 0.5),
+            fov=30,
+            GUI=True,
+        )
+
+        self.cam2 = self.scene.add_camera(
+            res=(640, 480),
+            pos=(0.0, 0.0, 1.5),
+            lookat=(0, 0, 0),
+            fov=30,
+            GUI=True,
+        )
+
         self.scene.build()
 
-        ##################### Configure #####################
+    def _init_gripper_control(self):
+        """Configure gripper control parameters."""
         self.base_dofs = np.arange(6)
         self.fingers_dof = np.arange(6, 8)
 
-        # set control gains
-        # Note: the following values are tuned for achieving best behavior with Franka
-        # Typically, each new robot would have a different set of parameters.
-        # Sometimes high-quality URDF or XML file would also provide this and will be parsed.
-        self.franka_gripper.set_dofs_kp(
-            np.array([40, 40, 40, 40, 40, 40, 40, 40]),
-        )
-        self.franka_gripper.set_dofs_kv(
-            np.array([20, 20, 20, 20, 20, 20, 10, 10]),
-        )
+        self.franka_gripper.set_dofs_kp(np.array([40, 40, 40, 40, 40, 40, 40, 40]))
+        self.franka_gripper.set_dofs_kv(np.array([20, 20, 20, 20, 20, 20, 10, 10]))
         self.franka_gripper.set_dofs_force_range(
-            np.array([-87, -87, -87,  -80, -80, -80, -100, -100]),
-            np.array([ 87,  87,  87,  80,  80,  80,  100,  100]),
+            np.array([-87, -87, -87, -80, -80, -80, -100, -100]),
+            np.array([87, 87, 87, 80, 80, 80, 100, 100]),
         )
 
+        self.end_effector = self.franka_gripper.get_link("panda_hand")
+        self.in_progress = False
 
-        # get the end-effector link
-        self.end_effector = self.franka_gripper.get_link('panda_hand')
-
-        # The initial grasp pose
-        self.grasp_pose = grasp_pose.copy()
-
-
-        ############################ Teleoperation GUI ###################
+    def _init_gui(self):
+        """Initialize the teleoperation GUI."""
         self.joystick_root = tk.Tk()
-        self.joystick_root.geometry("600x300") 
+        self.joystick_root.geometry("1000x500")
         self.joystick = Joystick(self.joystick_root, self)
-        
-        # Maximum speed for the cube
-        self.max_v = 0.04
-        self.max_angular_v = 10*np.pi/180
 
-
-        ########################### Poses to Collect #####################
-        self.object_poses = []
-        self.gripper_poses = []
-        self.data_collection_thread = threading.Thread(target = self.collect_poses)
+    def _init_data_collection(self):
+        """Initialize data collection structures."""
+        self.object_poses: List[np.ndarray] = []
+        self.gripper_poses: List[np.ndarray] = []
+        self.img_data: Dict[str, np.ndarray] = {}
         self.kill_thread = threading.Event()
-        self.data_filename = obj_type + ".pkl"
-        
-        obj_mesh = o3d.io.read_triangle_mesh(obj_filename)
-        obj_vertices = np.asarray(obj_mesh.vertices)
-        std_x = 0.001 #0.01 * (np.max(obj_vertices[:, 0]) - np.min(obj_vertices[:, 0]))
-        std_y = 0.001 #0.01 * (np.max(obj_vertices[:, 1]) - np.min(obj_vertices[:, 1]))
-        std_theta = 0.001 #np.pi/180 * 0.1 # 0.1 degree
-        self.pose_noise_std = {"x": std_x, "y": std_y, "theta": std_theta}
+        self.data_collection_thread: Optional[threading.Thread] = None
 
-    def reset(self, collect_data = True):
-        '''
-        The function to reset the environment
-        '''
-        # At first, stop the old data collection thread
-        if collect_data is True:
+    def reset(self, collect_data: bool = True):
+        """
+        Reset the environment to a new random configuration.
+
+        Args:
+            collect_data: Whether to start data collection after reset
+        """
+        if collect_data:
             self.kill_thread.set()
 
-        # Place the cube at any random pose
+        # Random object placement
         angle = np.random.rand() * 2 * np.pi
-        cube_pos = [\
-            self.horizon_size * np.cos(angle), 
-            self.horizon_size * np.sin(angle), 
-            self.height]
+        cube_pos = [
+            self.config.horizon_size * np.cos(angle),
+            self.config.horizon_size * np.sin(angle),
+            self.height,
+        ]
         cube_angle = np.random.rand() * np.pi * 2 - np.pi
-        cube_quat = xyz_to_quat(torch.tensor([0, 0, cube_angle]), rpy=True)
+        cube_quat = xyz_to_quat(np.array([0, 0, cube_angle]), rpy=True)
+
         self.cube.set_pos(cube_pos)
         self.cube.set_quat(cube_quat)
 
-        # Transform the grasp pose to the world frame
+        # Transform grasp pose to world frame
         object_pos = self.cube.get_pos().cpu().numpy()
         object_quat = self.cube.get_quat().cpu().numpy()
         object_transform = np.eye(4)
-        object_transform[:3, :3] = R.from_quat(
-            object_quat, scalar_first=True).as_matrix()
+        object_transform[:3, :3] = R.from_quat(object_quat, scalar_first=True).as_matrix()
         object_transform[:3, 3] = object_pos
-        grasp_pose_world = object_transform @ self.grasp_pose
-        # Move to grasp pose
+
+        grasp_pose_world = object_transform @ self.config.grasp_pose
         grasp_pos = grasp_pose_world[:3, 3]
         grasp_quat = R.from_matrix(grasp_pose_world[:3, :3]).as_quat(scalar_first=True)
-        # Move the gripper there
+
+        # Set gripper to grasp pose
         qpos = np.zeros(9)
         qpos[0:3] = grasp_pos
         qpos[3:7] = grasp_quat
-        qpos[7:] = 0.04  # gripper open pos
-
-        # At the start, manually set the gripper to the pre-grasp pose
+        qpos[7:] = 0.04  # Gripper open
         self.franka_gripper.set_qpos(qpos)
 
-        # Close the gripper
-        vpos = np.zeros(6)
-        self.franka_gripper.control_dofs_velocity(vpos, self.base_dofs) 
+        # Close gripper
+        self.franka_gripper.control_dofs_velocity(np.zeros(6), self.base_dofs)
         self.franka_gripper.control_dofs_force(np.array([-0.6, -0.6]), self.fingers_dof)
 
-        # Allow the process to complete
-        for i in range(200):
+        for _ in range(200):
             self.scene.step()
 
         self.in_progress = False
 
-        # Start the new data collection thread
-        if collect_data is True:
+        if collect_data:
             self.kill_thread.clear()
-            self.data_collection_thread = threading.Thread(target = self.collect_poses)
+            self.data_collection_thread = threading.Thread(target=self._collect_poses)
             self.data_collection_thread.start()
 
-    def teleoperation(self):
-        '''
-        The function to control the gripper using teleoperation from user
-        '''
-        # Print helper messages
-        print("**** Avoid Long Pressing *****")
-        print("[ad]: Rotational movement")
+    def execute(self, joystick_vector: List[float]):
+        """
+        Execute a control command from the joystick.
 
-        # Loop the joystick GUI
-        self.joystick_root.mainloop()
-        
-
-    def execute(self, joystick_vector):
-        '''
-        The control functions execute the value read from the joystick
-        '''
-        # Control arm by sending commands
-        displacement_vector = [0, 0, 0]
-       
-        displacement_vector[0] = joystick_vector[0] * self.max_v 
-        displacement_vector[1] = -joystick_vector[1] * self.max_v
-        displacement_vector[2] = joystick_vector[2] * self.max_angular_v
+        Args:
+            joystick_vector: [x, y, rotation] normalized values
+        """
+        displacement = [
+            joystick_vector[0] * self.config.max_v,
+            -joystick_vector[1] * self.config.max_v,
+            joystick_vector[2] * self.config.max_angular_v,
+        ]
         if not self.in_progress:
-            self._move(np.array(displacement_vector))
-    def _move(self, vector, body = False, timesteps = 10):
-        '''
-        The function to move the gripper along the target displacement vector
-        NOTE: to use displacement seems to be better than velocity
-        '''
-        if np.linalg.norm(vector) != 0:
-            self.in_progress = True # Deny the new commands until the current one is completed
-            
-            if body is True: # Rotation along the body z-axis (body-1-2-3)
-                current_pos = self.franka_gripper.get_pos().cpu().numpy()
-                current_angle = quat_to_xyz(self.franka_gripper.get_quat()).cpu().numpy()
-                qpos = np.zeros(6)
-                qpos[0:3] = [current_pos[0] + vector[0], current_pos[1] + vector[1], current_pos[2]]
-                target_angle_body_z = current_angle[2] + vector[2]
-                qpos[3:6] = [current_angle[0], current_angle[1], target_angle_body_z]
-                
-            else: # Rotation along the world z-axis (world-1-2-3)
-                # NOTE: I didn't add the angles to rpy directly,
-                # because the quat_to_xyz formulas are different 
-                # in quat_to_xyz and numpy
-                current_pos = self.franka_gripper.get_pos().cpu().numpy()
-                current_quat = R.from_quat(self.franka_gripper.get_quat().cpu().numpy(), scalar_first=True).as_matrix()
-                new_quat = R.from_quat([np.cos(vector[2]/2), 0, 0, np.sin(vector[2]/2)], scalar_first=True).as_matrix() @ current_quat
-                new_quat = R.from_matrix(new_quat).as_quat(scalar_first=True)
-                new_quat= quat_to_xyz(new_quat)
-                qpos = np.zeros(6)
-                qpos[0:3] = [current_pos[0] + vector[0], current_pos[1] + vector[1], current_pos[2]]
-                qpos[3:6] = new_quat
-                
-            # Always execute body-1-2-3/ world-3-2-1
-            self.franka_gripper.control_dofs_position(qpos, self.base_dofs)
-            for i in range(timesteps):
-                self.scene.step()
-            self.in_progress = False
-    def _exit(self):
-        '''
-        The function to exit the current simulation environment
-        '''
-        self.kill_thread.set()
-        # Store the collected data into a separate file
-        data_dict = {}
-        data_dict["gripper_poses"] = self.gripper_poses
-        data_dict["object_poses"] = self.object_poses
-        data_dict["grasp_pose"] = self.grasp_pose
-        with open(self.data_filename, "wb") as f:
-            pickle.dump(data_dict, f)
+            self._move(np.array(displacement))
 
-        exit(0)
-    
-    def collect_poses(self):
+    def _move(self, vector: np.ndarray, timesteps: int = 10):
+        """
+        Move the gripper by the specified displacement.
 
-        gripper_poses_one_demo = []
-        object_poses_one_demo = []
-        while True and not self.kill_thread.is_set():
-            # Obtain the gripper pose
-            current_pos = self.franka_gripper.get_pos().cpu().numpy()
+        Args:
+            vector: [dx, dy, dtheta] displacement vector
+            timesteps: Number of simulation steps
+        """
+        if np.linalg.norm(vector) == 0:
+            return
 
-            # Euler convention: body-3-2-1 / world-1-2-3
-            current_angle = quat_to_xyz(self.franka_gripper.get_quat(), rpy=True).cpu().numpy()
-            gripper_pose = [\
-                current_pos[0] + np.random.normal(0, self.pose_noise_std["x"]), \
-                current_pos[1] + np.random.normal(0, self.pose_noise_std["y"]), \
-                current_angle[2] + np.random.normal(0, self.pose_noise_std["theta"])]
+        self.in_progress = True
 
-            # Obtain the object pose
-            current_pos = self.cube.get_pos().cpu().numpy()
-            current_angle = quat_to_xyz(self.cube.get_quat(), rpy=True).cpu().numpy()
-            object_pose = [\
-                current_pos[0] + np.random.normal(0, self.pose_noise_std["x"]), \
-                current_pos[1] + np.random.normal(0, self.pose_noise_std["y"]), \
-                current_angle[2] + np.random.normal(0, self.pose_noise_std["theta"])]
-            
-            gripper_poses_one_demo.append(gripper_pose)
-            object_poses_one_demo.append(object_pose)
+        current_pos = self.franka_gripper.get_pos().cpu().numpy()
+        current_quat = R.from_quat(
+            self.franka_gripper.get_quat().cpu().numpy(), scalar_first=True
+        ).as_matrix()
 
-            # Wait for some time so we can drive the robot to a new position.
+        # Apply rotation around world z-axis
+        rot_z = R.from_quat(
+            [np.cos(vector[2] / 2), 0, 0, np.sin(vector[2] / 2)], scalar_first=True
+        ).as_matrix()
+        new_quat = rot_z @ current_quat
+        new_euler = quat_to_xyz(R.from_matrix(new_quat).as_quat(scalar_first=True))
+
+        qpos = np.zeros(6)
+        qpos[0:3] = [current_pos[0] + vector[0], current_pos[1] + vector[1], current_pos[2]]
+        qpos[3:6] = new_euler
+
+        self.franka_gripper.control_dofs_position(qpos, self.base_dofs)
+        for _ in range(timesteps):
+            self.scene.step()
+
+        self.in_progress = False
+
+    def _collect_poses(self):
+        """Background thread for collecting pose and image data."""
+        gripper_poses_demo = []
+        object_poses_demo = []
+        images_demo = {"forward_view": [], "overhead_view": []}
+        noise_std = self.config.pose_noise_std
+
+        while not self.kill_thread.is_set():
+            # Capture images
+            rgb_1, _, _, _ = self.cam1.render(rgb=False, depth=False, segmentation=False, normal=False)
+            rgb_2, _, _, _ = self.cam2.render(rgb=True, depth=False, segmentation=False, normal=False)
+            images_demo["forward_view"].append(rgb_1)
+            images_demo["overhead_view"].append(rgb_2)
+
+            # Record gripper pose with noise
+            gripper_pos = self.franka_gripper.get_pos().cpu().numpy()
+            gripper_angle = quat_to_xyz(self.franka_gripper.get_quat(), rpy=True).cpu().numpy()
+            gripper_pose = [
+                gripper_pos[0] + np.random.normal(0, noise_std["x"]),
+                gripper_pos[1] + np.random.normal(0, noise_std["y"]),
+                gripper_angle[2] + np.random.normal(0, noise_std["theta"]),
+            ]
+
+            # Record object pose with noise
+            object_pos = self.cube.get_pos().cpu().numpy()
+            object_angle = quat_to_xyz(self.cube.get_quat(), rpy=True).cpu().numpy()
+            object_pose = [
+                object_pos[0] + np.random.normal(0, noise_std["x"]),
+                object_pos[1] + np.random.normal(0, noise_std["y"]),
+                object_angle[2] + np.random.normal(0, noise_std["theta"]),
+            ]
+
+            gripper_poses_demo.append(gripper_pose)
+            object_poses_demo.append(object_pose)
+
             time.sleep(0.2)
 
-        # Extend the existing list or Create a new list
-        gripper_poses_one_demo = np.array(gripper_poses_one_demo)
-        object_poses_one_demo = np.array(object_poses_one_demo)
+        # Convert to arrays and store
+        self.gripper_poses.append(np.array(gripper_poses_demo))
+        self.object_poses.append(np.array(object_poses_demo))
+        self.img_data = {
+            "forward_view": np.array(images_demo["forward_view"]),
+            "overhead_view": np.array(images_demo["overhead_view"]),
+        }
 
-        self.gripper_poses.append(gripper_poses_one_demo)
-        self.object_poses.append(object_poses_one_demo)
-    def collect_demo(self):
-        
+        print(f"Collected demo: gripper_poses={self.gripper_poses[-1].shape}, "
+              f"object_poses={self.object_poses[-1].shape}")
 
-        ########################## Reset ##########################
+    def save_data(self, filename: str):
+        """
+        Save collected demonstration data to file.
+
+        Args:
+            filename: Output pickle file path
+        """
+        data = {
+            "gripper_poses": self.gripper_poses,
+            "object_poses": self.object_poses,
+            "grasp_pose": self.config.grasp_pose,
+            "img_data": self.img_data,
+        }
+        with open(filename, "wb") as f:
+            pickle.dump(data, f)
+        print(f"Data saved to {filename}")
+
+    def exit(self):
+        """Exit the environment and save data."""
+        self.kill_thread.set()
+        time.sleep(1)
+        self.save_data(f"{self.config.obj_type}.pkl")
+        self.joystick_root.quit()
+
+    def run_teleoperation(self):
+        """Start the teleoperation interface for data collection."""
+        print("**** Teleoperation Controls ****")
+        print("  Mouse drag: XY movement")
+        print("  [a/d]: Rotate left/right")
+        print("  [r]: Reset environment")
+        print("  [q]: Quit and save data")
+        print("********************************")
+
         self.reset(collect_data=True)
-
-        ########################## Teleoperation ##########################
-
-        self.teleoperation()
-
-    def policy(self, **kwargs):
-        self.reset(collect_data=False)
-        if kwargs["policy"] == "diffusion":
-            self.diffusion_policy(**kwargs)
-        else:
-            print("Unknown policy type. Exiting")
-    
-    def diffusion_policy(self, **kwargs):
-        '''
-        The function to execute the diffusion policy
-        '''
-        # Load the normalization statistics
-        normalization_stats = torch.load(kwargs["normalization_stats"])
-
-        # Hyperparameters
-        obs_length = 3
-        obs_dim = 3
-        seq_length = 4
-        action_dim = 3
-        
-        v_min = normalization_stats["v_min"].cpu()
-        v_max = normalization_stats["v_max"].cpu()
-        angular_v_max = normalization_stats["angular_v_max"].cpu()
-        angular_v_min = normalization_stats["angular_v_min"].cpu()
-        training_sq = normalization_stats["training_sq"]
-        local_label = normalization_stats["local_label"]
-        global_label = normalization_stats["global_label"]
-        # Construct the models
-        option = 'unet1d'  # 
-        if option == "unet1d":
-            model = ConditionalUnet1D(
-                input_dim = action_dim,
-                local_cond_dim = 1,
-                global_cond_dim = 2 * obs_length * obs_dim,
-            )
-        else:
-            # model = ConditionalUnet1D(
-            #     input_dim = 6,
-            #     local_cond_dim = 1,
-            #     global_cond_dim = 6,
-            # )
-            pass # TODO: the transformer
-
-        diffusion = GaussianDiffusion1DConditional(
-            model,
-            seq_length = seq_length,
-            timesteps = 10,
-            sampling_timesteps = 8,
-            ddim_sampling_eta = 1.0,
-            objective = 'pred_noise'
-        )
-
-        dataset = Dataset1DCond(training_sq, local_label, global_label)
-        trainer = Trainer1DCond(
-            diffusion,
-            dataset = dataset,
-            train_batch_size = 32,
-            train_lr = 8e-5,
-            train_num_steps = 5000,         # total training steps
-            gradient_accumulate_every = 2,    # gradient accumulation steps
-            ema_decay = 0.995,                # exponential moving average decay
-            amp = True,                       # turn on mixed precision
-            save_and_sample_every=100000      # Force not to save the sample result
-        )
-
-        # Load the previously trained model
-        trainer.load(1)
-
-        # Execute the diffusion policy on the novel task
-        batch_size_sample = 1
-
-        # Obtain the gripper pose
-        current_pos = self.franka_gripper.get_pos().cpu().numpy()
-        current_angle = quat_to_xyz(self.franka_gripper.get_quat(), rpy=True).cpu().numpy()
-        gripper_pose = torch.tensor([current_pos[0], current_pos[1], current_angle[2]])
-
-        # Obtain the object pose
-        current_pos = self.cube.get_pos().cpu().numpy()
-        current_angle = quat_to_xyz(self.cube.get_quat(), rpy=True).cpu().numpy()
-        object_pose = torch.tensor([current_pos[0], current_pos[1], current_angle[2]])
-        gripper_pose_init = gripper_pose
-        gripper_pose_init = torch.concatenate([gripper_pose, gripper_pose, gripper_pose]) # Stack three gripper poses together
-        object_pose_init = object_pose
-        object_pose_init = object_pose.repeat(obs_length) #torch.concatenate([object_pose, object_pose, object_pose]) # Stack three object poses together
-        
-        # NOTE: use the object pose & gripper pose
-        global_label_sample = torch.tile(torch.concatenate([gripper_pose_init, object_pose_init]), (batch_size_sample, 1)).float() # (2 x obs_length x obs_dim)
-        # global_label_sample = torch.tile(object_pose_init, (batch_size_sample, 1)).float()
-        local_label_sample = torch.zeros(batch_size_sample, 1, seq_length).float() # This is constant
-        steps = 0
-
-        while True:
-            steps += 1
-
-            # Sample the sequence
-            sampled_seq = diffusion.sample(batch_size = batch_size_sample, \
-                    local_cond = local_label_sample, global_cond = global_label_sample)
-
-            traj_recon = torch.mean(sampled_seq, dim = 0)
-            traj_recon = traj_recon.to(device='cpu') # DxT
-            torch.cuda.synchronize()
-
-            # Extract the normalization statistics
-            traj_noisy_max_sel = torch.tensor([v_max, v_max, angular_v_max]).unsqueeze(-1).to(device=traj_recon.device)
-            traj_noisy_min_sel = torch.tensor([v_min, v_min, angular_v_min]).unsqueeze(-1).to(device=traj_recon.device)
-            traj_recon = traj_recon * (traj_noisy_max_sel - traj_noisy_min_sel) + traj_noisy_min_sel
+        self.joystick_root.mainloop()
 
 
-
-            # Execute the policy
-            print(traj_recon.shape)
-            action = torch.mean(traj_recon, dim=1)
-            print(action.shape)
-            # action = (x, y, theta)
-            # x -> translation along world x-axis
-            # y -> translation along world y-axis
-            # theta -> rotation around world-z axis
-            
-            # By default, Genesis needs
-            # x -> translation algon world x-axis
-            # y -> translation along world y-axis
-            # theta -> rotation around body-z axis
-            self._move(action, timesteps=150)
-            # Obtain the gripper pose
-            current_pos = self.franka_gripper.get_pos().cpu().numpy()
-            current_angle = quat_to_xyz(self.franka_gripper.get_quat().cpu().numpy(), rpy=True)
-            current_gripper_pose = torch.tensor([current_pos[0], current_pos[1], current_angle[2]])
-
-            # Obtain the object pose
-            current_pos = self.cube.get_pos().cpu().numpy()
-            current_angle = quat_to_xyz(self.cube.get_quat().cpu().numpy(), rpy=True)
-            current_object_pose = torch.tensor([current_pos[0], current_pos[1], current_angle[2]])
-            
-            # NOTE: care about the gripper & object pose
-            obs_gripper_pose = global_label_sample[0][action_dim : obs_length * action_dim]
-            obs_gripper_pose = torch.concatenate((obs_gripper_pose, current_gripper_pose))
-            obs_object_pose = global_label_sample[0][(-obs_length + 1) * obs_dim :]
-            obs_object_pose = torch.concatenate((obs_object_pose, current_object_pose))
-            global_label_sample = torch.concatenate((obs_gripper_pose, obs_object_pose)) #obs_object_pose.clone()
-
-            # Determine whether to exit
-            if se2norm(object_pose) < 0.08 or steps > 150:
-                print(object_pose)
-                break
-
-            # Stack global_label_sample
-            global_label_sample = torch.tile(global_label_sample, (batch_size_sample, 1)).float()
+def load_grasp_pose(grasp_pose_path: str) -> np.ndarray:
+    """Load grasp pose from JSON file."""
+    with open(grasp_pose_path, "r") as f:
+        data = json.load(f)
+    grasp_pose = np.eye(4)
+    grasp_pose[:3, :3] = np.array(data["rotation"])
+    grasp_pose[:3, 3] = np.array(data["translation"])
+    return grasp_pose
 
 
-# The mesh model of the object
-obj_type = "banana"
-obj_filename = "./object_models/banana/textured.obj"
+def main():
+    parser = argparse.ArgumentParser(description="Collect manipulation demonstrations")
+    parser.add_argument("-o", "--object", default="banana", help="Object type name")
+    parser.add_argument(
+        "-m", "--mesh",
+        default="./object_models/banana/textured.obj",
+        help="Path to object mesh file"
+    )
+    parser.add_argument(
+        "-g", "--grasp-pose",
+        default=None,
+        help="Path to grasp pose JSON file (optional)"
+    )
+    parser.add_argument(
+        "--horizon-size",
+        type=float,
+        default=0.3,
+        help="Radius of random object placement"
+    )
+    args = parser.parse_args()
 
-# Obtain the grasp pose in the frame of the object
-grasp_pose = np.eye(4)
-# grasp_pose[:3, :3] = R.from_euler('zyx', [0, -90, 90], degrees=True).as_matrix()
+    # Load or create default grasp pose
+    if args.grasp_pose and Path(args.grasp_pose).exists():
+        grasp_pose = load_grasp_pose(args.grasp_pose)
+    else:
+        # Default grasp pose
+        grasp_pose = np.array([
+            [0.0, 1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, -1.0, 0.1],
+            [0.0, 0.0, 0.0, 1.0],
+        ])
 
-# grasp_pose[:3, 3] = np.array([0.17, 0, 0.09])
-grasp_pose[:3, :3] = R.from_euler('zyx', [120, 0, 180], degrees=True).as_matrix()
+    config = EnvConfig(
+        obj_filename=args.mesh,
+        obj_type=args.object,
+        grasp_pose=grasp_pose,
+        horizon_size=args.horizon_size,
+    )
 
-grasp_pose[:3, 3] = np.array([0.009, 0.051, 0.09])
-
-# Another pose
-# grasp_pose = np.array([
-#         [  0.0000000,  1.0000000,  0.0000000, 0],
-#     [1.0000000, -0.0000000,  0.0000000, 0],
-#     [0.0000000, -0.0000000, -1.0000000, 0 ],
-#     [0, 0, 0, 1]
-#     ])
-# grasp_pose[0:3, 3] = np.array([0, 0, 0.1])
-env = MoveCubeEnv(obj_filename = obj_filename, obj_type = obj_type, grasp_pose=grasp_pose)
-env.collect_demo()
+    env = MoveCubeEnv(config)
+    env.run_teleoperation()
 
 
+if __name__ == "__main__":
+    main()
